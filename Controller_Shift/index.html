@@ -1,0 +1,780 @@
+<!--
+  Controller Shift Report - Refactored Single-File App
+  - Modular structure (services implemented as JS classes inside one module script)
+  - Uses TailwindCSS for UI, Firebase (v11 modular) for storage, jsPDF+autoTable for PDF
+  - Template elements for dynamic rows
+  - Saving includes createdAt/updatedAt timestamps and sorts by createdAt desc
+  - Strips empty dynamic rows before saving
+  - Improved PDF layout, logo placeholder, digital sign-off
+
+  HOW TO USE:
+  1. Replace firebaseConfig and optionally appId / initialAuthToken with your values.
+  2. Serve this file via a static server (or open directly for local testing but Firebase may require secure origin).
+  3. Click "Save Report" to store in Firestore (anonymous auth by default). Use "Generate PDF" to export.
+-->
+
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Controller Shift Report — Refactor</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.14/jspdf.plugin.autotable.min.js"></script>
+  <style>body{font-family:Inter,ui-sans-serif,system-ui,-apple-system,'Segoe UI',Roboto,'Helvetica Neue',Arial}</style>
+</head>
+<body class="bg-gray-100 p-6">
+
+<div class="max-w-5xl mx-auto bg-white rounded-xl shadow-lg p-6 md:p-10">
+  <header class="flex items-center justify-between mb-6">
+    <div class="flex items-center space-x-4">
+      <!-- logo placeholder -->
+      <div class="w-14 h-14 bg-gradient-to-br from-sky-600 to-emerald-500 rounded-lg flex items-center justify-center text-white font-bold">TA</div>
+      <div>
+        <h1 class="text-2xl font-bold">Thinkers Afrika (Pty) Ltd</h1>
+        <p class="text-sm text-gray-500">Controller Shift Report — Refactored</p>
+      </div>
+    </div>
+    <div class="text-right">
+      <div id="authStatus" class="text-sm text-gray-600">Not authenticated</div>
+      <div class="mt-2">
+        <input id="reportNameInput" class="px-3 py-1 rounded-l border border-gray-300" placeholder="Report name (optional)" />
+        <button id="saveReportBtn" class="py-1 px-3 bg-blue-600 text-white rounded-r">Save</button>
+      </div>
+    </div>
+  </header>
+
+  <div id="message-box" class="hidden p-3 rounded mb-4 font-semibold"></div>
+
+  <main>
+    <!-- Saved reports list (compact cards) -->
+    <section class="mb-6">
+      <h2 class="font-semibold mb-2">Saved Reports</h2>
+      <div id="savedReportsList" class="grid gap-3 md:grid-cols-2"></div>
+    </section>
+
+    <form id="reportForm" class="space-y-6">
+      <section class="grid md:grid-cols-2 gap-4">
+        <div>
+          <label class="block text-sm font-semibold mb-1">Date</label>
+          <input id="reportDate" type="date" class="w-full p-2 border rounded" required />
+        </div>
+        <div>
+          <label class="block text-sm font-semibold mb-1">Shift</label>
+          <select id="shiftType" class="w-full p-2 border rounded" required>
+            <option value="">Select Shift</option>
+            <option>Day Shift (06:00 - 18:00)</option>
+            <option>Night Shift (18:00 - 06:00)</option>
+          </select>
+        </div>
+
+        <div class="col-span-2">
+          <label class="block text-sm font-semibold mb-1">On-duty Controllers</label>
+          <div class="grid md:grid-cols-2 gap-3">
+            <select id="controller1" class="p-2 border rounded" required>
+              <option value="">Select Controller</option>
+              <option>Kabelo Tshabalala</option>
+              <option>Sipho Mahlinza</option>
+              <option>Keamogetswe Maripana</option>
+              <option>Gontle Ditibane</option>
+              <option>John Macharaga</option>
+              <option>Matshidiso Maake</option>
+            </select>
+            <select id="controller2" class="p-2 border rounded" required>
+              <option value="">Select Controller</option>
+              <option>Kabelo Tshabalala</option>
+              <option>Sipho Mahlinza</option>
+              <option>Keamogetswe Maripana</option>
+              <option>Gontle Ditibane</option>
+              <option>John Macharaga</option>
+              <option>Matshidiso Maake</option>
+            </select>
+          </div>
+        </div>
+      </section>
+
+      <section class="grid md:grid-cols-3 gap-4">
+         <div class="grid md:grid-cols-2 gap-4 col-span-2">
+          <div>
+            <label class="block text-sm font-semibold mb-1">Loading Point</label>
+            <input id="startingDestination" type="text" class="w-full p-2 border rounded" required />
+          </div>
+          <div>
+            <label class="block text-sm font-semibold mb-1">Offloading Point</label>
+            <input id="endingDestination" type="text" class="w-full p-2 border rounded" required />
+          </div>
+        </div>
+        <div>
+          <label class="block text-sm font-semibold mb-1">Total Trucks Scheduled</label>
+          <input id="totalTrucks" type="number" min="0" class="w-full p-2 border rounded" required />
+        </div>
+        <div>
+          <label class="block text-sm font-semibold mb-1">Total Loads Dispatched</label>
+          <input id="totalLoads" type="number" min="0" class="w-full p-2 border rounded" required />
+        </div>
+        <div>
+          <label class="block text-sm font-semibold mb-1">Total Loads Delivered</label>
+          <input id="loadsDelivered" type="number" min="0" class="w-full p-2 border rounded" required />
+        </div>
+        <div>
+          <label class="block text-sm font-semibold mb-1">Pending Deliveries</label>
+          <input id="pendingDeliveries" type="number" min="0" class="w-full p-2 border rounded" required />
+        </div>
+
+      
+
+        <div class="md:col-span-2">
+          <label class="block text-sm font-semibold mb-1">Overall Shift Performance</label>
+          <select id="shiftPerformance" class="w-full p-2 border rounded" required>
+            <option value="">Select Performance</option>
+            <option>Smooth</option>
+            <option>Moderate Delays</option>
+            <option>Challenging</option>
+          </select>
+        </div>
+
+        <div class="md:col-span-3">
+          <label class="block text-sm font-semibold mb-1">Key Highlights / Observations</label>
+          <textarea id="keyHighlights" rows="3" class="w-full p-2 border rounded" required></textarea>
+        </div>
+      </section>
+
+      <!-- Truck updates (templates) -->
+      <section>
+        <h3 class="font-semibold mb-2">Truck Updates & Logistics Flow</h3>
+        <div id="truckUpdatesContainer" class="space-y-2"></div>
+        <div class="flex space-x-2 mt-3">
+          <button id="addTruckUpdate" type="button" class="px-3 py-1 bg-gray-200 rounded">Add Update</button>
+        </div>
+      </section>
+
+      <!-- Incidents -->
+      <section class="grid md:grid-cols-3 gap-4">
+        <div class="md:col-span-3">
+          <h3 class="font-semibold mb-2">Breakdowns Reported</h3>
+          <div id="breakdownsContainer" class="space-y-3"></div>
+          <button id="addBreakdown" type="button" class="mt-2 px-3 py-1 bg-gray-200 rounded">Add Breakdown</button>
+        </div>
+
+        <div class="md:col-span-3">
+          <h3 class="font-semibold mb-2">Documentation of Phone Calls for Non-Adherence</h3>
+          <div id="phoneCallsContainer" class="space-y-3"></div>
+          <button id="addPhoneCall" type="button" class="mt-2 px-3 py-1 bg-gray-200 rounded">Add Phone Call</button>
+        </div>
+
+        <div class="md:col-span-3">
+          <h3 class="font-semibold mb-2">Investigation Findings</h3>
+          <div id="investigationsContainer" class="space-y-3"></div>
+          <button id="addInvestigation" type="button" class="mt-2 px-3 py-1 bg-gray-200 rounded">Add Investigation</button>
+        </div>
+      </section>
+
+      <!-- Communication log -->
+      <section>
+        <h3 class="font-semibold mb-2">Communication Log</h3>
+        <div id="communicationLogContainer" class="space-y-3"></div>
+        <button id="addCommunication" type="button" class="mt-2 px-3 py-1 bg-gray-200 rounded">Add Communication</button>
+      </section>
+
+      <!-- Handover & Declaration -->
+      <section class="grid md:grid-cols-2 gap-4">
+        <div>
+          <label class="block text-sm font-semibold mb-1">Outstanding Issues / Follow-ups</label>
+          <textarea id="outstandingIssues" rows="3" class="w-full p-2 border rounded" required></textarea>
+        </div>
+        <div>
+          <label class="block text-sm font-semibold mb-1">Key Info for Incoming Shift</label>
+          <textarea id="incomingInfo" rows="3" class="w-full p-2 border rounded" required></textarea>
+        </div>
+        <div class="md:col-span-2">
+          <div class="flex items-start">
+            <input id="declarationCheckbox" type="checkbox" class="mt-1" required />
+            <label class="ml-2">We certify that the information contained in this shift report is accurate and complete to the best of our knowledge.</label>
+          </div>
+          <div class="grid md:grid-cols-2 gap-3 mt-3">
+            <select id="reviewer1" class="p-2 border rounded" required>
+              <option value="">Select Reviewer 1</option>
+              <option>Kabelo Tshabalala</option>
+              <option>Sipho Mahlinza</option>
+              <option>Keamogetswe Maripana</option>
+              <option>Gontle Ditibane</option>
+              <option>John Macharaga</option>
+              <option>Matshidiso Maake</option>
+            </select>
+            <select id="reviewer2" class="p-2 border rounded" required>
+              <option value="">Select Reviewer 2</option>
+              <option>Kabelo Tshabalala</option>
+              <option>Sipho Mahlinza</option>
+              <option>Keamogetswe Maripana</option>
+              <option>Gontle Ditibane</option>
+              <option>John Macharaga</option>
+              <option>Matshidiso Maake</option>
+            </select>
+          </div>
+        </div>
+      </section>
+
+      <div class="text-center pt-4">
+        <button id="generatePdfBtn" type="button" class="w-full md:w-1/3 py-2 bg-blue-600 text-white rounded">Generate PDF Report</button>
+      </div>
+    </form>
+  </main>
+</div>
+
+<!-- TEMPLATES -->
+<template id="truckUpdateTemplate">
+  <div class="flex items-start space-x-2">
+    <input type="text" class="flex-1 p-2 border rounded" placeholder="(HH:MM) - Status" />
+    <button class="remove-btn px-2 py-1 bg-red-500 text-white rounded">-</button>
+  </div>
+</template>
+
+<template id="breakdownTemplate">
+  <div class="grid md:grid-cols-4 gap-2 p-3 border rounded items-end">
+    <input placeholder="Truck Reg No." class="p-2 border rounded" />
+    <input placeholder="Time Reported (HH:MM)" class="p-2 border rounded" />
+    <input placeholder="Issue" class="p-2 border rounded" />
+    <input placeholder="Status/Resolution" class="p-2 border rounded" />
+    <button class="remove-btn md:col-span-4 px-3 py-1 bg-red-500 text-white rounded">Remove</button>
+  </div>
+</template>
+
+<template id="phoneCallTemplate">
+  <div class="grid md:grid-cols-4 gap-2 p-3 border rounded items-end">
+    <input placeholder="Driver/Truck Reg No." class="p-2 border rounded" />
+    <input placeholder="Rule Violated" class="p-2 border rounded" />
+    <input placeholder="Time of Call (HH:MM)" class="p-2 border rounded" />
+    <input placeholder="Summary" class="p-2 border rounded" />
+    <button class="remove-btn md:col-span-4 px-3 py-1 bg-red-500 text-white rounded">Remove</button>
+  </div>
+</template>
+
+<template id="investigationTemplate">
+  <div class="grid md:grid-cols-5 gap-2 p-3 border rounded items-end">
+    <input placeholder="Truck Reg No." class="p-2 border rounded" />
+    <input placeholder="Issue Identified" class="p-2 border rounded" />
+    <input placeholder="Time/Location" class="p-2 border rounded" />
+    <input placeholder="Findings" class="p-2 border rounded" />
+    <input placeholder="Action Taken" class="p-2 border rounded" />
+    <button class="remove-btn md:col-span-5 px-3 py-1 bg-red-500 text-white rounded">Remove</button>
+  </div>
+</template>
+
+<template id="communicationTemplate">
+  <div class="grid md:grid-cols-3 gap-2 p-3 border rounded items-end">
+    <input placeholder="Time (HH:MM)" class="p-2 border rounded" />
+    <input placeholder="Recipient" class="p-2 border rounded" />
+    <input placeholder="Subject/Purpose" class="p-2 border rounded" />
+    <button class="remove-btn md:col-span-3 px-3 py-1 bg-red-500 text-white rounded">Remove</button>
+  </div>
+</template>
+
+<script type="module">
+// Single-file modular refactor: services implemented as classes
+import { initializeApp } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js';
+import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js';
+import { getFirestore, collection, addDoc, doc, getDoc, deleteDoc, onSnapshot, query, orderBy, serverTimestamp } from 'https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js';
+
+// ----- Configuration (replace these as needed) -----
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {
+  // <-- Replace with your own Firebase config for real usage
+  apiKey: "YOUR_API_KEY",
+  authDomain: "YOUR_AUTH_DOMAIN",
+  projectId: "YOUR_PROJECT_ID",
+  storageBucket: "YOUR_BUCKET",
+  messagingSenderId: "SENDER_ID",
+  appId: "APP_ID"
+};
+const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+// --------------------------------------------------
+
+// Utility: show message
+class UIService {
+  constructor() { this.messageBox = document.getElementById('message-box'); }
+  show(message, type='info'){
+    this.messageBox.style.display = 'block';
+    this.messageBox.textContent = message;
+    const classes = {
+      success: 'bg-green-100 text-green-700',
+      error: 'bg-red-100 text-red-700',
+      info: 'bg-blue-100 text-blue-700'
+    };
+    this.messageBox.className = `p-3 rounded mb-4 font-semibold ${classes[type]||classes.info}`;
+    clearTimeout(this._hideTimer);
+    this._hideTimer = setTimeout(()=> this.messageBox.style.display='none', 6000);
+  }
+}
+
+// Firebase wrapper
+class FirebaseService {
+  constructor(){
+    this.app = null; this.db = null; this.auth = null; this.userId = null;
+    this.ui = new UIService();
+    this.init();
+  }
+  init(){
+    try{
+      this.app = initializeApp(firebaseConfig);
+      this.db = getFirestore(this.app);
+      this.auth = getAuth(this.app);
+
+      onAuthStateChanged(this.auth, async (user)=>{
+        if(user){
+          this.userId = user.uid;
+          document.getElementById('authStatus').textContent = `Authenticated (UID: ${this.userId})`;
+          this.ui.show('Authenticated successfully', 'success');
+          this.startReportsListener();
+        } else {
+          document.getElementById('authStatus').textContent = 'Signing in...';
+          try{
+            if(initialAuthToken) await signInWithCustomToken(this.auth, initialAuthToken);
+            else await signInAnonymously(this.auth);
+          }catch(err){
+            console.error('Auth error', err);
+            this.ui.show('Authentication failed: '+err.message, 'error');
+          }
+        }
+      });
+    }catch(err){
+      console.error('Firebase init error', err);
+      this.ui.show('Firebase initialization error: '+err.message, 'error');
+    }
+  }
+
+  reportsCollectionRef(){
+    return collection(this.db, `artifacts/${appId}/users/${this.userId}/reports`);
+  }
+
+  async saveReport(reportData){
+    if(!this.userId) throw new Error('User not authenticated');
+    const payload = {
+      ...reportData,
+      updatedAt: serverTimestamp(),
+      createdAt: reportData.createdAt || serverTimestamp()
+    };
+    return await addDoc(this.reportsCollectionRef(), payload);
+  }
+
+  startReportsListener(){
+    const listEl = document.getElementById('savedReportsList');
+    const q = query(this.reportsCollectionRef(), orderBy('createdAt', 'desc'));
+    onSnapshot(q, (snap)=>{
+      listEl.innerHTML = '';
+      snap.forEach(docSnap => {
+        const data = docSnap.data();
+        const card = document.createElement('div');
+        card.className = 'p-3 border rounded bg-gray-50 flex items-center justify-between';
+        const left = document.createElement('div');
+        left.innerHTML = `<div class="font-semibold">${data.name||'(Unnamed)'} </div><div class="text-xs text-gray-500">${data.reportDate||''} • ${data.shiftType||''}</div>`;
+        const actions = document.createElement('div');
+        actions.className='flex space-x-2';
+        const loadBtn = document.createElement('button'); loadBtn.textContent='Load'; loadBtn.className='px-2 py-1 bg-green-500 text-white rounded text-sm';
+        const delBtn = document.createElement('button'); delBtn.textContent='Delete'; delBtn.className='px-2 py-1 bg-red-500 text-white rounded text-sm';
+        loadBtn.addEventListener('click', ()=> this.loadReport(docSnap.id));
+        delBtn.addEventListener('click', ()=> this.deleteReport(docSnap.id));
+        actions.appendChild(loadBtn); actions.appendChild(delBtn);
+        card.appendChild(left); card.appendChild(actions);
+        listEl.appendChild(card);
+      });
+    }, err=>{
+      console.error('Snapshot error', err);
+      this.ui.show('Error loading saved reports', 'error');
+    });
+  }
+
+  async loadReport(reportId){
+    try{
+      const ref = doc(this.db, `artifacts/${appId}/users/${this.userId}/reports`, reportId);
+      const snap = await getDoc(ref);
+      if(!snap.exists()) { this.ui.show('Report not found', 'error'); return; }
+      FormService.setFormData(snap.data());
+      this.ui.show('Report loaded', 'success');
+    }catch(err){ console.error(err); this.ui.show('Error loading report', 'error'); }
+  }
+
+  async deleteReport(reportId){
+    try{
+      await deleteDoc(doc(this.db, `artifacts/${appId}/users/${this.userId}/reports`, reportId));
+      this.ui.show('Report deleted', 'success');
+    }catch(err){ console.error(err); this.ui.show('Error deleting report', 'error'); }
+  }
+}
+
+// Form handling service (singleton)
+class FormServiceClass {
+  constructor(){
+    // references
+    this.form = document.getElementById('reportForm');
+    // containers
+    this.containers = {
+      truckUpdates: document.getElementById('truckUpdatesContainer'),
+      breakdowns: document.getElementById('breakdownsContainer'),
+      phoneCalls: document.getElementById('phoneCallsContainer'),
+      investigations: document.getElementById('investigationsContainer'),
+      communicationLog: document.getElementById('communicationLogContainer')
+    };
+    this.templates = {
+      truckUpdate: document.getElementById('truckUpdateTemplate'),
+      breakdown: document.getElementById('breakdownTemplate'),
+      phoneCall: document.getElementById('phoneCallTemplate'),
+      investigation: document.getElementById('investigationTemplate'),
+      communication: document.getElementById('communicationTemplate')
+    };
+    this.initDefaults();
+  }
+
+  initDefaults(){
+    // add one default truck update
+    if(this.containers.truckUpdates.children.length===0) this.addTruckUpdate();
+  }
+
+  // --- adders ---
+  addTruckUpdate(text=''){
+    const node = this.templates.truckUpdate.content.cloneNode(true);
+    const input = node.querySelector('input'); input.value = text;
+    const btn = node.querySelector('.remove-btn'); btn.addEventListener('click', e=> e.target.closest('div').remove());
+    this.containers.truckUpdates.appendChild(node);
+  }
+  addBreakdown(item={}){
+    const node = this.templates.breakdown.content.cloneNode(true);
+    const inputs = node.querySelectorAll('input');
+    inputs[0].value = item.truckRegNo||'';
+    inputs[1].value = item.timeReported||'';
+    inputs[2].value = item.issue||'';
+    inputs[3].value = item.status||'';
+    node.querySelector('.remove-btn').addEventListener('click', e=> e.target.closest('.grid').remove());
+    this.containers.breakdowns.appendChild(node);
+  }
+  addPhoneCall(item={}){
+    const node = this.templates.phoneCall.content.cloneNode(true);
+    const inputs = node.querySelectorAll('input');
+    inputs[0].value = item.driverTruckRegNo||'';
+    inputs[1].value = item.ruleViolated||'';
+    inputs[2].value = item.timeOfCall||'';
+    inputs[3].value = item.summary||'';
+    node.querySelector('.remove-btn').addEventListener('click', e=> e.target.closest('.grid').remove());
+    this.containers.phoneCalls.appendChild(node);
+  }
+  addInvestigation(item={}){
+    const node = this.templates.investigation.content.cloneNode(true);
+    const inputs = node.querySelectorAll('input');
+    inputs[0].value = item.truckRegNo||'';
+    inputs[1].value = item.issueIdentified||'';
+    inputs[2].value = item.timeLocation||'';
+    inputs[3].value = item.findings||'';
+    inputs[4].value = item.actionTaken||'';
+    node.querySelector('.remove-btn').addEventListener('click', e=> e.target.closest('.grid').remove());
+    this.containers.investigations.appendChild(node);
+  }
+  addCommunication(item={}){
+    const node = this.templates.communication.content.cloneNode(true);
+    const inputs = node.querySelectorAll('input');
+    inputs[0].value = item.time||'';
+    inputs[1].value = item.recipient||'';
+    inputs[2].value = item.subject||'';
+    node.querySelector('.remove-btn').addEventListener('click', e=> e.target.closest('.grid').remove());
+    this.containers.communicationLog.appendChild(node);
+  }
+
+  // read form, cleaning empty rows
+  getFormData(){
+    const getVal = id => document.getElementById(id)?.value || '';
+    
+    const truckUpdates = Array.from(this.containers.truckUpdates.querySelectorAll('input'))
+      .map(i=>i.value.trim()).filter(v=>v);
+
+    const breakdowns = Array.from(this.containers.breakdowns.querySelectorAll('.grid'))
+      .map(div=>Array.from(div.querySelectorAll('input')).map(i=>i.value.trim()))
+      .filter(arr=>arr.some(v=>v))
+      .map(arr=>({truckRegNo:arr[0], timeReported:arr[1], issue:arr[2], status:arr[3]}));
+
+    const phoneCalls = Array.from(this.containers.phoneCalls.querySelectorAll('.grid'))
+      .map(div=>Array.from(div.querySelectorAll('input')).map(i=>i.value.trim()))
+      .filter(arr=>arr.some(v=>v))
+      .map(arr=>({driverTruckRegNo:arr[0], ruleViolated:arr[1], timeOfCall:arr[2], summary:arr[3]}));
+
+    const investigations = Array.from(this.containers.investigations.querySelectorAll('.grid'))
+      .map(div=>Array.from(div.querySelectorAll('input')).map(i=>i.value.trim()))
+      .filter(arr=>arr.some(v=>v))
+      .map(arr=>({truckRegNo:arr[0], issueIdentified:arr[1], timeLocation:arr[2], findings:arr[3], actionTaken:arr[4]}));
+
+    const communicationLog = Array.from(this.containers.communicationLog.querySelectorAll('.grid'))
+      .map(div=>Array.from(div.querySelectorAll('input')).map(i=>i.value.trim()))
+      .filter(arr=>arr.some(v=>v))
+      .map(arr=>({time:arr[0], recipient:arr[1], subject:arr[2]}));
+
+    return {
+      reportDate: getVal('reportDate'),
+      shiftType: getVal('shiftType'),
+      controller1: getVal('controller1'),
+      controller2: getVal('controller2'),
+      startingDestination: getVal('startingDestination'),
+      endingDestination: getVal('endingDestination'),
+      totalTrucks: getVal('totalTrucks'),
+      totalLoads: getVal('totalLoads'),
+      loadsDelivered: getVal('loadsDelivered'),
+      pendingDeliveries: getVal('pendingDeliveries'),
+      shiftPerformance: getVal('shiftPerformance'),
+      keyHighlights: getVal('keyHighlights'),
+      truckUpdates, breakdowns, phoneCalls, investigations, communicationLog,
+      outstandingIssues: getVal('outstandingIssues'),
+      incomingInfo: getVal('incomingInfo'),
+      reviewer1: getVal('reviewer1'), reviewer2: getVal('reviewer2')
+    };
+  }
+
+  // populate the form given saved data
+  setFormData(data){
+    const setVal = (id, val='')=> { const el=document.getElementById(id); if(el) el.value = val; };
+    setVal('reportDate', data.reportDate||'');
+    setVal('shiftType', data.shiftType||'');
+    setVal('controller1', data.controller1||'');
+    setVal('controller2', data.controller2||'');
+    setVal('startingDestination', data.startingDestination || '');
+    setVal('endingDestination', data.endingDestination || '');
+    setVal('totalTrucks', data.totalTrucks||'');
+    setVal('totalLoads', data.totalLoads||'');
+    setVal('loadsDelivered', data.loadsDelivered||'');
+    setVal('pendingDeliveries', data.pendingDeliveries||'');
+    setVal('shiftPerformance', data.shiftPerformance||'');
+    setVal('keyHighlights', data.keyHighlights||'');
+    setVal('outstandingIssues', data.outstandingIssues||'');
+    setVal('incomingInfo', data.incomingInfo||'');
+    setVal('reviewer1', data.reviewer1||'');
+    setVal('reviewer2', data.reviewer2||'');
+
+    // clear dynamic
+    this.containers.truckUpdates.innerHTML='';
+    this.containers.breakdowns.innerHTML='';
+    this.containers.phoneCalls.innerHTML='';
+    this.containers.investigations.innerHTML='';
+    this.containers.communicationLog.innerHTML='';
+
+    (data.truckUpdates||[]).forEach(t => this.addTruckUpdate(t));
+    (data.breakdowns||[]).forEach(b => this.addBreakdown(b));
+    (data.phoneCalls||[]).forEach(p => this.addPhoneCall(p));
+    (data.investigations||[]).forEach(i => this.addInvestigation(i));
+    (data.communicationLog||[]).forEach(c => this.addCommunication(c));
+  }
+}
+
+const FormService = new FormServiceClass();
+
+// PDF generation service
+class PDFService {
+  constructor() {
+    this.logoDataUrl = '../logo/ThinkersAfrica_Logo.jpeg';
+  }
+
+  // load logo once, convert to base64 and store
+  async setLogo(url) {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.crossOrigin = "Anonymous";
+      img.src = url;
+      img.onload = () => {
+        const canvas = document.createElement("canvas");
+        canvas.width = img.width;
+        canvas.height = img.height;
+        const ctx = canvas.getContext("2d");
+        ctx.drawImage(img, 0, 0);
+        this.logoDataUrl = canvas.toDataURL("image/jpeg");
+        resolve(this.logoDataUrl);
+      };
+      img.onerror = reject;
+    });
+  }
+
+  async generatePDF(formData) {
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF({ unit: "pt", format: "a4" });
+    const margin = 40;
+    const lineHeight = 12;
+    const marginLeft = 40;   // left padding
+// --- Header with Centered Logo + Text side by side ---
+const imgWidth = 80, imgHeight = 80;
+const gap = 20; // space between logo and text
+let y = 60;
+
+// Measure the text width
+doc.setFontSize(16);
+doc.setFont("helvetica", "bold");
+const company = "Thinkers Afrika (Pty) Ltd";
+const report = "Controller Shift Report";
+const companyWidth = doc.getTextWidth(company);
+const reportWidth = doc.getTextWidth(report);
+
+// pick the widest line
+const textBlockWidth = Math.max(companyWidth, reportWidth);
+const totalBlockWidth = imgWidth + gap + textBlockWidth;
+
+// calculate starting X so the whole block is centered
+const pageWidth = doc.internal.pageSize.width;
+const startX = (pageWidth - totalBlockWidth) / 2;
+
+// --- Draw logo ---
+if (this.logoDataUrl) {
+  doc.addImage(this.logoDataUrl, "JPEG", startX, y, imgWidth, imgHeight);
+} else {
+  doc.rect(startX, y, imgWidth, imgHeight);
+  doc.setFontSize(10);
+  doc.text("LOGO", startX + imgWidth / 2, y + imgHeight / 2 + 3, { align: "center" });
+}
+
+// --- Draw text ---
+const textX = startX + imgWidth + gap;
+let textY = y + 25; // vertical alignment
+
+doc.setFontSize(16);
+doc.setFont("helvetica", "bold");
+doc.text(company, textX, textY);
+
+doc.setFontSize(13);
+textY += 25;
+doc.text(report, textX, textY);
+
+// move Y down for rest of report
+y = y + imgHeight + 30;
+
+ // move Y down for the rest of the report
+    // ... keep the rest of your tables and sections unchanged ...
+    // (meta, summary, highlights, trucks, breakdowns, etc.)
+    // ---
+     // meta table
+    const meta = [
+      ['Date', formData.reportDate||'Not specified'],
+      ['Shift', formData.shiftType||'Not specified'],
+      ['On-duty Controller 1', formData.controller1||'Not specified'],
+      ['On-duty Controller 2', formData.controller2||'Not specified']
+    ];
+    doc.autoTable({ startY: y, body: meta, theme:'grid', styles:{fontSize:9}, margin:{left:margin, right:margin} });
+    y = doc.autoTable.previous.finalY + 8;
+
+    const summary = [
+      ['Loading Point', formData.startingDestination || 'Not specified'],
+      ['Offloading Point', formData.endingDestination || 'Not specified'],
+      ['Total Trucks Scheduled', formData.totalTrucks||'0'],
+      ['Total Loads Dispatched', formData.totalLoads||'0'],
+      ['Loads Delivered', formData.loadsDelivered||'0'],
+      ['Pending Deliveries', formData.pendingDeliveries||'0'],
+      ['Shift Performance', formData.shiftPerformance||'Not specified']
+    ];
+    doc.autoTable({ startY: y, body: summary, theme:'striped', styles:{fontSize:9}, margin:{left:margin, right:margin} });
+    y = doc.autoTable.previous.finalY + 8;
+    y += 6;
+    // highlights
+    doc.setFontSize(10); doc.setFont('helvetica', 'bold'); doc.text('Key Highlights/Observations:', margin, y); y+=lineHeight;
+    doc.setFontSize(10); doc.setFont('helvetica', 'normal');
+    const splits = doc.splitTextToSize(formData.keyHighlights||'No highlights provided.', doc.internal.pageSize.width - margin*2);
+    doc.text(splits, margin, y); y += splits.length * lineHeight + 6;
+
+    // truck updates
+    doc.setFont('helvetica','bold'); doc.text('Truck Updates & Logistics Flow', margin, y); y+=lineHeight;
+    if(formData.truckUpdates && formData.truckUpdates.length>0){
+      formData.truckUpdates.forEach(u=>{ const s = doc.splitTextToSize('- '+u, doc.internal.pageSize.width - margin*2); doc.text(s, margin, y); y += s.length * lineHeight; });
+    } else { doc.setFont('helvetica','normal'); doc.text('No truck updates provided.', margin, y); y+=lineHeight; }
+
+    // incidents tables (breakdowns, phone calls, investigations)
+    y += 6;
+    if(formData.breakdowns && formData.breakdowns.length>0){
+      doc.setFont('helvetica','bold'); doc.text('Breakdowns Reported', margin, y); y+=lineHeight;
+      const head = ['Truck Reg No.', 'Time Reported', 'Issue', 'Status/Resolution'];
+      const body = formData.breakdowns.map(b=>[b.truckRegNo||'', b.timeReported||'', b.issue||'', b.status||'']);
+      doc.autoTable({ startY:y, head:[head], body, styles:{fontSize:9},  headStyles:{fillColor:[139,0,0], textColor:[255,255,255]} , margin:{left:margin,right:margin} });
+      y = doc.autoTable.previous.finalY + 8;
+    }
+    if(formData.phoneCalls && formData.phoneCalls.length>0){
+      doc.setFont('helvetica','bold'); doc.text('Phone Calls - Non-Adherence', margin, y); y+=lineHeight;
+      const head = ['Driver/Truck Reg No.','Rule Violated','Time of Call','Summary'];
+      const body = formData.phoneCalls.map(p=>[p.driverTruckRegNo||'', p.ruleViolated||'', p.timeOfCall||'', p.summary||'']);
+      doc.autoTable({ startY:y, head:[head], body, styles:{fontSize:9}, headStyles:{fillColor:[139,0,0], textColor:[255,255,255]} , margin:{left:margin,right:margin} });
+      y = doc.autoTable.previous.finalY + 8;
+    }
+    if(formData.investigations && formData.investigations.length>0){
+      doc.setFont('helvetica','bold'); doc.text('Investigations', margin, y); y+=lineHeight;
+      const head = ['Truck Reg No.','Issue Identified','Time/Location','Findings','Action Taken'];
+      const body = formData.investigations.map(i=>[i.truckRegNo||'', i.issueIdentified||'', i.timeLocation||'', i.findings||'', i.actionTaken||'']);
+      doc.autoTable({ startY:y, head:[head], body, styles:{fontSize:9}, headStyles:{fillColor:[139,0,0], textColor:[255,255,255]} , margin:{left:margin,right:margin} });
+      y = doc.autoTable.previous.finalY + 8;
+    }
+
+    // communication log
+    if(formData.communicationLog && formData.communicationLog.length>0){
+      doc.setFont('helvetica','bold'); doc.text('Communication Log', margin, y); y+=lineHeight;
+      const head = ['Time','Recipient','Subject/Purpose'];
+      const body = formData.communicationLog.map(c=>[c.time||'', c.recipient||'', c.subject||'']);
+      doc.autoTable({ startY:y, head:[head], body, styles:{fontSize:9}, headStyles:{fillColor:[139,0,0], textColor:[255,255,255]} , margin:{left:margin,right:margin} });
+      y = doc.autoTable.previous.finalY + 8;
+    }
+
+    // handover
+    doc.setFont('helvetica','bold'); doc.text('Handover Information', margin, y); y+=lineHeight;
+    doc.setFont('helvetica','normal');
+    const handoverText = [`Outstanding Issues: ${formData.outstandingIssues||'None'}`, `Key Info: ${formData.incomingInfo||'None'}`];
+    handoverText.forEach(t=>{ const s = doc.splitTextToSize(t, doc.internal.pageSize.width - margin*2); doc.text(s, margin, y); y += s.length * lineHeight; });
+
+    // declaration & reviewers
+    y += 8; doc.setFont('helvetica','bold'); doc.text('Controller Declaration', margin, y); y+=lineHeight;
+    doc.setFont('helvetica','normal'); doc.text('We certify that the information contained in this shift report is accurate and complete to the best of our knowledge.', margin, y); y+=lineHeight*1.2;
+    doc.text(`Reviewed and approved by: ${formData.reviewer1||'Not specified'} | ${formData.reviewer2||'Not specified'}`, margin, y);
+
+    // footer (page numbers)
+    const pageCount = doc.internal.getNumberOfPages();
+    for (let i = 1; i <= pageCount; i++) {
+      doc.setPage(i);
+      doc.setFontSize(8);
+      doc.text(
+        `Page ${i} of ${pageCount}`,
+        doc.internal.pageSize.width - 40,
+        doc.internal.pageSize.height - 30,
+        { align: "right" }
+      );
+    }
+
+    // save
+    const filename = `Controller_Shift_Report_${formData.reportDate || new Date().toISOString().slice(0,10)}.pdf`;
+    doc.save(filename);
+  }
+}
+
+const pdfService = new PDFService();
+
+// Wire up UI events
+const firebaseService = new FirebaseService();
+const ui = new UIService();
+
+// attach add buttons
+document.getElementById('addTruckUpdate').addEventListener('click', ()=> FormService.addTruckUpdate());
+document.getElementById('addBreakdown').addEventListener('click', ()=> FormService.addBreakdown());
+document.getElementById('addPhoneCall').addEventListener('click', ()=> FormService.addPhoneCall());
+document.getElementById('addInvestigation').addEventListener('click', ()=> FormService.addInvestigation());
+document.getElementById('addCommunication').addEventListener('click', ()=> FormService.addCommunication());
+
+// save report
+document.getElementById('saveReportBtn').addEventListener('click', async ()=>{
+  try{
+    const name = document.getElementById('reportNameInput').value || null;
+    const data = FormService.getFormData();
+    // basic required validation
+    if(!data.reportDate || !data.shiftType || !data.controller1 || !data.controller2){ ui.show('Please complete required top-level fields', 'error'); return; }
+    const cleaned = {...data, name};
+    const res = await firebaseService.saveReport(cleaned);
+    ui.show('Report saved successfully', 'success');
+  }catch(err){ console.error(err); ui.show('Error saving report: '+err.message, 'error'); }
+});
+
+// generate PDF
+document.getElementById('generatePdfBtn').addEventListener('click', async ()=>{
+  const data = FormService.getFormData();
+  await pdfService.generatePDF(data);
+});
+
+// Expose FormService setter for firebase loader to call
+window.FormService = FormService;
+
+</script>
+
+</body>
+</html>
